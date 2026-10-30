@@ -1,0 +1,13 @@
+# --- Large data (too big for GitHub; regenerable or from Kaggle) ---
+preprocessed data lusizo.zip
+filament-segmentation-2026/
+data_prep/prepared/
+data_prep/_samples/
+modelling/cache/
+modelling/runs/
+modelling/runs_prefix/
+
+# --- Python ---
+__pycache__/
+*.pyc
+.ipynb_checkpoints/

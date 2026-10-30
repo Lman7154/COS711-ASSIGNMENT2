@@ -1,0 +1,63 @@
+{
+  "raw->prepared counts": {
+    "ok": true,
+    "detail": "observations 707, sets 1154, filaments 8199, test 180"
+  },
+  "train_gt_rle.csv == raw polygons (pycocotools)": {
+    "ok": true,
+    "detail": "0 mismatching filaments out of 8199"
+  },
+  "split: no observation/rotation in two folds, test unlabelled": {
+    "ok": true,
+    "detail": "set/obs fold mismatches 0, rotations spanning folds 0, labelled test images 0, fold sizes [139, 138, 145, 142, 143]"
+  },
+  "transforms present for every image": {
+    "ok": true,
+    "detail": "M0..M5 defined for all 707 train + 180 test images"
+  },
+  "prepared masks -> original frame vs raw GT (round trip)": {
+    "ok": true,
+    "detail": "PQ 0.9997 (SQ 0.9997, RQ 1.0000) over 1154 sets"
+  },
+  "cache identical to prepared PNGs": {
+    "ok": true,
+    "detail": "0 mismatching files of 2041; filament index exact: True"
+  },
+  "fast windowed crop == full warp (within float rounding)": {
+    "ok": true,
+    "detail": "max differing pixels over 50 random crops: 42 of 262144 (0.016%)"
+  },
+  "training crops: labels on dark filaments": {
+    "ok": true,
+    "detail": "filament darker than surroundings in 100% of 260 crops (mean contrast -0.120)"
+  },
+  "training crops: sampled on the disk": {
+    "ok": true,
+    "detail": "mean disk coverage per crop 92%; in the 146 crops that reach the limb, the loss mask's off-disk area is black sky for 100.0% of pixels"
+  },
+  "training crops: class balance": {
+    "ok": true,
+    "detail": "filament pixels per crop 1.39%, crops without filament 13%; loading 22 ms per augmented crop"
+  },
+  "monitor/report split": {
+    "ok": true,
+    "detail": "monitor 40 images (2011-2022, sites {'M': 9, 'L': 8, 'T': 8, 'U': 6, 'B': 5, 'C': 4}), report 99 images, overlap 0"
+  },
+  "perfect prediction scores ~1 through the pipeline": {
+    "ok": true,
+    "detail": "PQ 0.9972 (before the fixes the same test scored 0.864)"
+  },
+  "our PQ == organisers' PQ on real model predictions": {
+    "ok": true,
+    "detail": "organisers 0.322735 vs ours 0.322735 on 15 images (230 predicted filaments)"
+  },
+  "no predicted filament pixels off the solar disk": {
+    "ok": true,
+    "detail": "max off-disk filament pixels per image 0; largest predicted filament 14505 px"
+  },
+  "_summary": {
+    "checks": 14,
+    "failed": 0,
+    "seconds": 329
+  }
+}

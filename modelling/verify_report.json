@@ -37,7 +37,7 @@
   },
   "training crops: class balance": {
     "ok": true,
-    "detail": "filament pixels per crop 1.39%, crops without filament 13%; loading 22 ms per augmented crop"
+    "detail": "filament pixels per crop 1.39%, crops without filament 13%; loading 18 ms per augmented crop"
   },
   "monitor/report split": {
     "ok": true,
@@ -58,6 +58,6 @@
   "_summary": {
     "checks": 14,
     "failed": 0,
-    "seconds": 329
+    "seconds": 301
   }
 }

@@ -277,8 +277,11 @@ one sky-sized blob. Checking the metric alone would never have revealed it.
 - Early stopping chose each checkpoint before fault 11 was found; the checkpoints were re-scored, not
   re-chosen (that would need retraining). The ranking it produced still holds.
 - Only the top two candidates got a second seed, and U-Net ResNet34 (equally accurate) got only one.
-- The final 0.396 uses post-processing tuned on fold 0; the 5-fold number (0.298) is before tuning.
-- Every number is local. The Kaggle leaderboard score needs `submission.csv` to be uploaded.
+- The final 0.396 uses post-processing tuned on fold 0; the 5-fold number (0.298) is before tuning. With the
+  tuned post-processing (0.5/500) and TTA the 5-fold number is **0.368 ± 0.019** (`improvements.ipynb` §2):
+  fold 0 is the best fold.
+- Kaggle public leaderboard for `submission.csv`: **0.33** (rank 789), within about two fold standard
+  deviations of the 5-fold estimate.
 - Validation PQ is noisy between epochs (40 monitor images); patience 5 can cut short a volatile model.
 - Not explored: crop size, `p_fg`, augmentation strength, batch size (defaults from data prep).
 
@@ -293,7 +296,10 @@ python run_experiments.py      # ~5 h: loss + architecture sweeps, seeds, learni
 python run_5fold.py            # ~1.5 h
 python rescore_runs.py         # ~30 min (only needed once, for runs trained before the sky fix)
 python run_postprocess.py      # ~25 min: tuning, TTA, timing, submission.csv
+python run_improve.py          # ~4 h: fair 5-fold estimate, small-blob rule, ensembles, clDice,
+                               #        all-data model, candidate files in submissions/
 ```
+Then `improvements.ipynb` reads `runs/improve/` (~5 min).
 Then open `experimental_setup.ipynb` and run all cells (~1 min; it reads the saved results).
 
 Notes: the scripts use 4 data-loading workers, which only works from a script on Windows (not inside a
@@ -304,7 +310,8 @@ is on a Python without the packages: `pip install opencv-python-headless segment
 ---
 
 ## 12. Open decisions for the group
-1. Upload `submission.csv` to Kaggle to get the first leaderboard score (5 uploads per day).
+1. ~~Upload `submission.csv`~~ Done: 0.33. Next, upload the candidates in `modelling/submissions/` in the
+   order given in `improvements.ipynb` §7.
 2. Keep TTA (+0.015 PQ, 3.4× slower inference), or drop it for efficiency?
 3. Run a second seed for U-Net ResNet34 before final selection, or accept EfficientNet-B3 on size?
 4. Enhancement priorities: filament continuity, faint filaments, or compression first?

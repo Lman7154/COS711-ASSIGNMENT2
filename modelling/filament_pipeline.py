@@ -27,7 +27,7 @@ Audit fixes (see EXPERIMENTAL_SETUP_UNDERSTANDING.md, "Audit"):
 from __future__ import annotations
 import json, math, time, random
 from pathlib import Path
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 
 import numpy as np
 import pandas as pd
@@ -67,8 +67,10 @@ class Config:
     encoder: str = "resnet34"
     base_ch: int = 32               # width of the from-scratch "unet"
     # loss
-    loss: str = "bce_dice"          # bce_dice | dice | tversky | focal_dice
+    loss: str = "bce_dice"          # bce_dice | dice | tversky | focal_dice | bce_dice_cldice
     tversky_beta: float = 0.7
+    cldice_weight: float = 0.5      # weight of the connectivity (clDice) term in bce_dice_cldice
+    cldice_iters: int = 10          # soft-skeleton iterations (>= half the width of a typical filament)
     # optimisation
     epochs: int = 30                # MAXIMUM epochs; early stopping usually stops sooner
     patience: int = 5               # stop after this many validations without a min_delta gain (0 = off)
@@ -83,6 +85,8 @@ class Config:
     low_threshold: float | None = None   # hysteresis: grow from >=threshold seeds into >=low_threshold
     close_px: int = 0               # morphological closing radius before splitting (0 = off)
     min_area: int = 60              # drop predicted blobs smaller than this (px)
+    small_area: int = 0             # ...but keep blobs of [small_area, min_area) px if confident (0 = off)
+    small_conf: float = 1.01        # mean probability a small blob needs to be kept
     window_overlap: float = 0.5
     tta: bool = False               # average 4 flips at inference
     infer_batch: int = 8
@@ -404,7 +408,37 @@ def focal_loss(logits, target, mask=None, gamma=2.0, alpha=0.75):
     return (a * (1 - pt) ** gamma * ce * w).sum() / w.sum().clamp(min=1)
 
 
+def _soft_erode(x):
+    return -F.max_pool2d(-x, 3, 1, 1)
+
+
+def _soft_open(x):
+    return F.max_pool2d(_soft_erode(x), 3, 1, 1)
+
+
+def soft_skeleton(x, iters):
+    """Differentiable skeleton (Shit et al., clDice, CVPR 2021): repeated soft erosions keep the centreline."""
+    skel = F.relu(x - _soft_open(x))
+    for _ in range(iters):
+        x = _soft_erode(x)
+        delta = F.relu(x - _soft_open(x))
+        skel = skel + F.relu(delta - skel * delta)
+    return skel
+
+
+def cldice_loss(logits, target, mask=None, iters=10, eps=1.0):
+    """clDice: rewards predictions whose CENTRELINE covers the true filament's centreline (and vice versa),
+    so a filament broken into pieces is penalised even when most of its pixels are right."""
+    w = _w(target, mask); p = torch.sigmoid(logits) * w; t = target * w
+    sp, st = soft_skeleton(p, iters), soft_skeleton(t, iters)
+    tprec = ((sp * t).sum((2, 3)) + eps) / (sp.sum((2, 3)) + eps)
+    tsens = ((st * p).sum((2, 3)) + eps) / (st.sum((2, 3)) + eps)
+    return (1 - 2 * tprec * tsens / (tprec + tsens)).mean()
+
+
 def build_loss(cfg: Config):
+    if cfg.loss == "bce_dice_cldice":
+        return lambda o, t, m: bce_loss(o, t, m) + dice_loss(o, t, m) + cfg.cldice_weight * cldice_loss(o, t, m, cfg.cldice_iters)
     if cfg.loss == "dice":
         return lambda o, t, m: dice_loss(o, t, m)
     if cfg.loss == "tversky":
@@ -488,8 +522,12 @@ def prob_to_instances(prob, cfg: Config):
     lab, n = ndimage.label(mask, structure=EIGHT)
     if n == 0:
         return lab.astype(np.uint16)
-    sizes = np.bincount(lab.ravel())[1:]
+    sizes = np.bincount(lab.ravel(), minlength=n + 1)[1:]
     ok = sizes >= cfg.min_area
+    if cfg.small_area and cfg.small_area < cfg.min_area:
+        # confidence-aware size filter: a small blob survives only if the model is sure about it
+        meanp = np.bincount(lab.ravel(), weights=prob.ravel(), minlength=n + 1)[1:] / np.maximum(sizes, 1)
+        ok |= (sizes >= cfg.small_area) & (meanp >= cfg.small_conf)
     remap = np.zeros(n + 1, np.uint16); remap[1:][ok] = np.arange(1, ok.sum() + 1)
     return remap[lab]
 
@@ -547,6 +585,21 @@ def score_probs(probs, obs_df, cfg: Config, details=False):
             m = pq_from_counts(c_img); m.update(obs=o.obs, site=o.site, n_pred=int(pred.max())); per_img.append(m)
     res = pq_from_counts(counts)
     return (res, pd.DataFrame(per_img)) if details else res
+
+
+def score_grid(get_prob, obs_df, cfg: Config, settings):
+    """Score many post-processing settings at once. get_prob(stem) -> canonical float prob map.
+    settings: {name: {Config field: value}}. Each image's ground truth is decoded only once.
+    Returns {name: pooled PQ metrics}, scored in the original frame against every annotation set."""
+    gts = _gt_table(cfg); cfgs = {k: replace(cfg, **v) for k, v in settings.items()}
+    acc = {k: [] for k in settings}
+    for o in obs_df.itertuples():
+        prob = get_prob(o.obs); M = [getattr(o, c) for c in MCOLS]
+        gtm = [ann_to_instmap_from_rle(gts[s]) for s in o.set_ids.split("|")]
+        for k, c in cfgs.items():
+            pred = to_original(prob_to_instances(prob, c), M)
+            acc[k] += [panoptic_quality(g, pred) for g in gtm]
+    return {k: pq_from_counts(v) for k, v in acc.items()}
 
 
 def validate_pq(model, cfg: Config, device, subset="monitor", max_images=None):
@@ -610,6 +663,44 @@ def train(cfg: Config, device=None, quick=False):
                    train_minutes=round((time.time() - t0) / 60, 2), quick=quick)
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     return model, summary, pd.DataFrame(history)
+
+
+def train_fixed(cfg: Config, folds, epochs, device=None):
+    """Train for a FIXED number of epochs on the given folds, with no validation (for a model trained on all
+    the data, where nothing is left to validate on). LR follows a cosine curve from cfg.lr to 5% of it.
+    The epoch count should come from measurements (e.g. the median best epoch of the 5-fold runs)."""
+    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    set_seed(cfg.seed); build_cache(cfg)
+    run_dir = Path(cfg.out_dir) / cfg.name; run_dir.mkdir(parents=True, exist_ok=True)
+    cfg.save(run_dir / "config.json")
+    ds = FilamentPatchDataset(cfg, list(folds), augment=cfg.augment)
+    dl = DataLoader(ds, batch_size=cfg.batch_size, shuffle=True, num_workers=cfg.num_workers, drop_last=True,
+                    pin_memory=(device.type == "cuda"), persistent_workers=cfg.num_workers > 0)
+    model = build_model(cfg).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs, eta_min=cfg.lr * 0.05)
+    loss_fn = build_loss(cfg); scaler = torch.amp.GradScaler(device.type, enabled=cfg.amp)
+    hist = []; t0 = time.time()
+    for epoch in range(epochs):
+        model.train(); tot = 0.0; nb = 0
+        for im, sem, bnd, disk in dl:
+            im, sem = im.to(device, non_blocking=True), sem.to(device, non_blocking=True)
+            disk = disk.to(device, non_blocking=True) if cfg.disk_loss else None
+            opt.zero_grad(set_to_none=True)
+            with torch.autocast(device.type, enabled=cfg.amp):
+                out = model(im)
+            loss = loss_fn(out.float(), sem, disk)
+            scaler.scale(loss).backward(); scaler.step(opt); scaler.update()
+            tot += loss.item(); nb += 1
+        hist.append(dict(epoch=epoch + 1, train_loss=tot / max(nb, 1), lr=opt.param_groups[0]["lr"]))
+        sched.step()
+        pd.DataFrame(hist).to_csv(run_dir / "history.csv", index=False)
+    torch.save(model.state_dict(), run_dir / "best.pt")
+    summary = dict(name=cfg.name, arch=cfg.arch, encoder=cfg.encoder, loss=cfg.loss, lr=cfg.lr, folds=list(folds),
+                   epochs=epochs, params=int(sum(p.numel() for p in model.parameters())),
+                   train_minutes=round((time.time() - t0) / 60, 2))
+    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    return model, summary
 
 
 # --------------------------------------------------------------------------------------------------
